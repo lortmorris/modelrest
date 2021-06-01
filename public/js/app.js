@@ -2,7 +2,8 @@ var myapp = angular.module('myapp', ['ngRoute', 'ngAnimate']);
 
 myapp.$http = null;
 
-myapp.endpoint = "http://localhost:5000/service";
+myapp.endpoint = "http://192.168.0.123:5000/service";
+
 myapp.basepath = "/";
 
 myapp.galax = function (title) {
@@ -31,7 +32,7 @@ myapp.galax = function (title) {
 
 
 myapp.config(function ($routeProvider, $locationProvider, $httpProvider) {
-    
+
     $httpProvider.defaults.headers.common["socketid"] = socket.id;
 
     $("#loading").hide();
@@ -158,5 +159,3 @@ myapp.controller("home", function ($scope, $http) {
 
 
 });
-
-

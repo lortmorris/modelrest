@@ -1,5 +1,5 @@
 {
-  "db": "127.0.0.1/movies",
+  "db": "mongodb://127.0.0.1/movies",
   "server": {
     "dbConnectionRetry": true,
     "maxConnectionRetryTime": 60,

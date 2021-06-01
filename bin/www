@@ -1,113 +1,70 @@
 #!/usr/bin/env node
 
-/* eslint-disable semi */
+const config = require('config');
+const debug = require('debug')('movies:server');
+const App = require('../app');
 
-var app = require('../app');
-var debug = require('debug')('movies:server');
-var config = require('config');
-var http = require('http');
+function normalizePort(val) {
+  const port = parseInt(val, 10);
 
-new app(config)
-    .then((main)=> {
-        var server  =main.server;
-        var port = normalizePort(process.env.PORT || config.get('server.port'));
+  if (Number.isNaN(port)) {
+    return val;
+  }
 
-        /**
-         * Normalize a port into a number, string, or false.
-         */
+  if (port >= 0) {
+    return port;
+  }
 
-        function normalizePort (val) {
-            var port = parseInt(val, 10);
+  return false;
+}
 
-            if (isNaN(port)) {
-                // named pipe
-                return val;
-            }
+function onListening(server) {
+  const addr = server.address();
+  const bind = typeof addr === 'string' ? `pipe ${addr}` : `port ${addr.port}`;
+  debug(`Listening on: ${bind}`);
+}
 
-            if (port >= 0) {
-                // port number
-                return port;
-            }
+function onError(error, port) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
 
-            return false;
-        }
+  const bind = typeof addr === 'string' ? `pipe ${port}` : `port ${port}`;
+  switch (error.code) {
+  case 'EACCES':
+    console.error(`${bind} requires elevated privileges`);
+    process.exit(1);
+    break;
+  case 'EADDRINUSE':
+    console.error(`${bind} is already in use`);
+    process.exit(1);
+    break;
+  default:
+    throw error;
+  }
+}
 
-        /**
-         * Event listener for HTTP server "error" event.
-         */
+function gracefulExit() {
+  console.log('exiting');
+  process.exit(0);
+}
 
-        function onError (error, port) {
-            if (error.syscall !== 'listen') {
-                throw error;
-            }
+async function initApp() {
+  const main = await new App(config);
+  const {
+    server,
+  } = main;
+  const port = normalizePort(process.env.PORT || config.get('server.port'));
 
-            var bind = typeof port === 'string'
-                ? 'Pipe ' + port
-                : 'Port ' + port;
+  server.on('error', () => onError(port));
+  server.on('listening', () => onListening(server));
 
-            // handle specific listen errors with friendly messages
-            switch (error.code) {
-                case 'EACCES':
-                    console.error(bind + ' requires elevated privileges');
-                    process.exit(1);
-                    break;
-                case 'EADDRINUSE':
-                    console.error(bind + ' is already in use');
-                    process.exit(1);
-                    break;
-                default:
-                    throw error;
-            }
-        }
+  process.on('SIGINT', gracefulExit).on('SIGTERM', gracefulExit);
+  process.on('uncaughtException', (err) => console.error(`Caught exception: ${err}`));
 
-        /**
-         * Event listener for HTTP server "listening" event.
-         */
+  // Listen on provided port, on all network interfaces.
+  console.log(`listen on ${port}`);
+  server.listen(port);
+}
 
-        function onListening (server) {
-            var addr = server.address();
-            var bind = typeof addr === 'string'
-                ? 'pipe ' + addr
-                : 'port ' + addr.port;
-            debug('Listening on ' + bind);
-        }
-
-        /**
-         * Gracefully terminate programs
-         */
-        var gracefulExit = function gracefulExit () {
-            console.log('exiting');
-            // server.on('close', function () {
-            process.exit(0);
-            // })
-            // server.close();
-        }
-
-
-
-        /**
-         * Create HTTP server.
-         */
-
-            // configure server callback
-        server.on('error', function () {
-            onError(port);
-        });
-
-        server.on('listening', function () {
-            onListening(server)
-        });
-
-        // If the Node process ends, close the Mongoose connection
-        process.on('SIGINT', gracefulExit).on('SIGTERM', gracefulExit);
-        process.on('uncaughtException', function (err) {
-            // todo replace with
-            console.error('Caught exception: ' + err);
-        });
-
-        // Listen on provided port, on all network interfaces.
-        console.log('listen on ' + port);
-        server.listen(port);
-    }).catch((err)=>{
-        throw err;
-    });
+initApp();

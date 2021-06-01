@@ -1,289 +1,228 @@
-/* eslint-disable semi */
-
-'use strict';
-
-
-const express = require("express");
-const http = require("http");
+const express = require('express');
+const http = require('http');
 const socket = require('socket.io');
 const swaggerTools = require('swagger-tools');
 const path = require('path');
 const yaml = require('js-yaml');
 const fs = require('fs');
 const cors = require('cors');
-const fdebug = require("./lib/fdebug");
-const common = require("./lib/common");
-const redis = require("./lib/redis");
 const session = require('express-session');
-const MongoStore = require('connect-mongo')(session);
+const connectMongo = require('connect-mongo');
 
+const fdebug = require('./lib/fdebug');
+const common = require('./lib/common');
+const Redis = require('./lib/redis');
+const Movies = require('./lib/movies');
 
-const Movies = require("./lib/movies");
 const debug = fdebug('movies:app');
 
-
-
-
-
-/**
- * Build the main application
- * @param {object} config - The module config
- * @returns {Promise}
- * @author César Casas
- */
 function app(config) {
+  debug('init....');
+  const self = this;
+  this.main = {
+    config,
+    db: common.getDB(),
+    restEndpoint: config.get('service.protocol') + config.get('service.host') + config.get('service.pathname'),
+    sockets: {},
+    app: express(),
+  };
 
-    var self = this;
-    debug("init....");
+  return new Promise((resolve, reject) => {
+    this.swaggerDoc()
+      .then(self.getApp())
+      .then(self.io())
+      .then(self.redisClient())
+      .then(self.announce())
+      .then(self.libs())
+      .then(self.controllers())
+      .then(self.routers())
+      .then(() => resolve(this.main))
+      .catch((err) => reject(err));
+  });
+}
 
-    //this object is the main to return, has all properties need for application (factories, config, controllers, routers, etc).
+app.prototype.swaggerDoc = async function swaggerDoc() {
+  console.info('running swaggerDoc');
 
-     self.main = {
-        config: config,
-        db: common.getDB(),
-        restEndpoint: config.get('service.protocol') + config.get('service.host') + config.get('service.pathname'),
-        sockets: {}
+  try {
+    const swaggerFile = path.join(__dirname, '/api/swagger/swagger.yaml');
+    const swaggerString = fs.readFileSync(swaggerFile, 'utf8');
+    const swaggerDocObject = yaml.safeLoad(swaggerString);
+
+    swaggerDocObject.host = this.main.config.get('service.host');
+    swaggerDocObject.basePath = this.main.config.get('service.pathname');
+
+    this.main.swaggerDoc = swaggerDocObject;
+    return { swaggerDoc: swaggerDocObject };
+  } catch (err) {
+    throw new Error('Error into swaggerDoc');
+  }
+};
+
+app.prototype.getApp = async function getApp() {
+  console.info('getApp...');
+
+  try {
+    this.main.app.set('trust proxy', 1);
+
+    this.main.app.use(session({
+      secret: 'mysecretData',
+      store: connectMongo.create({ mongoUrl: this.main.config.get('db') }),
+      resave: false,
+      saveUninitialized: true,
+      cookie: { secure: true },
+    }));
+
+    this.main.server = http.createServer(this.main.app);
+    return {
+      app: this.main.app,
+      server: this.main.server,
+    };
+  } catch (err) {
+    console.error(err);
+    throw new Error('Error into getApp');
+  }
+};
+
+app.prototype.io = async function io() {
+  console.info('io...');
+  try {
+    const pathName = this.main.config.get('service.pathname');
+    debug(`${pathName}/socket.io`);
+    this.main.io = socket(this.main.server);
+
+    this.main.io.on('connection', (sock) => {
+      debug(`Socket.io connected: ${sock.id}`);
+      this.main.sockets[sock.id] = sock;
+      this.main.sockets[sock.created] = new Date();
+
+      socket.on('disconnect', () => {
+        delete this.main.sockets[sock.id];
+      });
+    });
+    return {
+      io: this.main.io,
+    };
+  } catch (err) {
+    console.error(err);
+    throw new Error('Erro into io');
+  }
+};
+
+app.prototype.redisClient = async function redisClient() {
+  console.info('redisClient');
+
+  try {
+    this.main.redisClient = new Redis();
+    return {
+      redisClient: this.main.redisClient,
+    };
+  } catch (err) {
+    throw new Error('Error into redisClient');
+  }
+};
+
+app.prototype.announce = async function announce() {
+  console.info('announce...');
+
+  try {
+    this.main.announce = function _announce(...args) {
+      const params = Array.prototype.slice.apply(args);
+      this.main.io.sockets.emit.apply(this.main.io.sockets, params);
     };
 
+    return {
+      announce: this.main.announce,
+    };
+  } catch (err) {
+    throw new Error('Error into announce');
+  }
+};
 
-    return new Promise((resolve, reject)=> {
+app.prototype.libs = async function libs() {
+  try {
+    this.main.libs = {};
+    this.main.libs.http = http;
+    this.main.libs.Movies = new Movies(this.main);
+    return this.main.libs;
+  } catch (err) {
+    throw new Error('Error into libs');
+  }
+};
 
-        self.swaggerDoc()
-            .then(()=> { return self.getApp(); })
-            .then(()=> { return self.io(); })
-            .then(()=> { return self.redisClient(); })
-            .then(()=> { return self.announce(); })
-            .then(()=> { return self.libs(); })
-            .then(()=> { return self.controllers(); })
-            .then(()=> { return self.routers();})
-            .then(()=> {
-                debug("Setup finish, run...");
-                resolve(self.main);
-            })
-        .catch((err)=>{
-                console.log("Error init: ", err);
-            });
+app.prototype.controllers = async function controllers() {
+  try {
+    this.main.controllers = require('./controllers')(this.main);
+    return this.main.controllers;
+  } catch (err) {
+    throw new Error('Error into controllers');
+  }
+};
+
+app.prototype.routers = async function routers() {
+  console.info('routers...');
+
+  const self = this;
+  const options = {
+    controllers: this.main.controllers,
+  };
+
+  const formatValidationError = function formatValidationError(req, res, next, err) {
+    console.info('cb: ', err);
+    res.json({ error: true });
+    /*
+    const error = {
+      code: 'validation_error',
+      message: err.message,
+      details: err.results ? err.results.errors : null,
+    };
+    */
+  };
+
+  function initMiddleWare(middleware, callback) {
+    debug('initializating middleware');
+
+    self.main.app.use((req, res, next) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
+      res.setHeader('Access-Control-Allow-Credentials', true);
+
+      if (req.method === 'OPTIONS') return res.end();
+
+      return next();
     });
-}
 
-/**
- * inject swagger doc into main object.
- * @returns {Promise}
- */
-app.prototype.swaggerDoc = function () {
-    var self = this;
+    self.main.app.use(middleware.swaggerMetadata());
+    self.main.app.use(middleware.swaggerValidator(), formatValidationError);
 
-    debug("running swaggerDoc");
+    self.main.app.use(middleware.swaggerRouter(options));
 
-    return new Promise((resolve, reject)=> {
-        var swaggerFile = path.join(__dirname, '/api/swagger/swagger.yaml');
-        var swaggerString = fs.readFileSync(swaggerFile, 'utf8');
-        var swaggerDoc = yaml.safeLoad(swaggerString);
-
-        swaggerDoc.host = self.main.config.get('service.host');
-        swaggerDoc.basePath = self.main.config.get('service.pathname');
-
-        self.main.swaggerDoc = swaggerDoc;
-        resolve({swaggerDoc: swaggerDoc});
+    self.main.app.use((req, res, next, err) => {
+      res.status(500);
+      res.send(err);
+      res.end();
     });
-}
 
-/**
- * Create the express instance an inject into main property the instance and server (http)
- * @returns {Promise}
- */
-app.prototype.getApp = function () {
-    var self = this;
-    debug("getApp...");
+    self.main.app.use(middleware.swaggerUi({
+      apiDocs: `${self.main.config.get('service.pathname')}/api-docs`,
+      swaggerUi: `${self.main.config.get('service.pathname')}/docs`,
+    }));
 
-    return new Promise((resolve, reject)=> {
-        self.main.app = express();
+    self.main.app.use(express.static('public'));
+    callback();
+  }
 
-        /**
-         * Sessions
-         */
-
-        self.main.app.set('trust proxy', 1);
-
-        self.main.app.use(session({
-            secret: 'mysecretData',
-            store: new MongoStore({db: common.getDB()})
-        }));
-
-
-        self.main.server = http.createServer(self.main.app);
-        resolve({app: self.main.app, server: self.main.server});
+  try {
+    self.main.app.use(cors());
+    self.main.app.set('basePath', this.main.swaggerDoc.basePath);
+    swaggerTools.initializeMiddleware(this.main.swaggerDoc, (swaggerMiddleware) => {
+      initMiddleWare(swaggerMiddleware, () => {});
     });
-}
-
-/**
- * create socket.io instance and inject into main object
- * @returns {Promise}
- */
-app.prototype.io = function () {
-    var self = this;
-
-    debug("io...");
-
-    return new Promise((resolve, reject)=> {
-        let pathName = self.main.config.get('service.pathname');
-        debug(pathName + '/socket.io');
-        self.main.io = socket.listen(self.main.server);
-
-
-        let io = self.main.io;
-
-
-        io.on('connection', (socket)=>{
-
-            debug("Socket.io connected: "+socket.id);
-            self.main.sockets[socket.id] = socket;
-            self.main.sockets[socket.created] = new Date();
-
-            socket.on('disconnect', ()=>{
-                delete self.main.sockets[socket.id];
-            });
-        });
-
-        resolve({io: self.main.io});
-    });
-}
-
-/**
- * create redisClient or sentinel instance, use own redis lib (return sentinel instance or redisClient). Inject the instance into main object.
- * @returns {Promise}
- */
-app.prototype.redisClient = function () {
-    var self = this;
-    debug("redisClient");
-
-    return new Promise((resolve, reject)=> {
-        self.main.redisClient = new redis();
-        resolve({redisClient: self.main.redisClient});
-    });
-}
-
-/**
- * Socket.io emit message. Using into controllers/index.js for wrapHandler
- * @returns {Promise}
- */
-app.prototype.announce = function () {
-    var self = this;
-    debug("announce...");
-
-    return new Promise((resolve, reject)=> {
-        self.main.announce = function () {
-            var args = Array.prototype.slice.apply(arguments);
-            self.main.io.sockets.emit.apply(self.main.io.sockets, args);
-        };
-
-        resolve({announce: self.main.announce});
-    });
-}
-
-
-/**
- * Create the common lib instances for all REST Application
- * @returns {Promise}
- */
-app.prototype.libs = function () {
-    var self = this;
-    return new Promise((resolve, reject)=> {
-
-        self.main.libs = {};
-        self.main.libs.http = http
-        self.main.libs.Movies =  new Movies(self.main)
-        
-        
-
-        resolve(self.main.libs);
-    });
-}
-
-app.prototype.controllers = function () {
-    var self = this;
-    var controllers = {};
-
-    debug("controllers...");
-
-    return new Promise((resolve, reject)=> {
-        self.main.controllers = require('./controllers')(self.main);
-        resolve(self.main.controllers);
-    });
-}
-
-
-
-
-app.prototype.routers = function () {
-    var self = this;
-
-    debug("routers...");
-
-    return new Promise((resolve, reject)=> {
-
-        var app = self.main.app;
-        var options = {
-            controllers: self.main.controllers
-        };
-
-
-        app.use(cors());
-        app.set('basePath', self.main.swaggerDoc.basePath);
-
-        var formatValidationError = function formatValidationError(err, req, res, next) {
-            var error = {
-                code: 'validation_error',
-                message: err.message,
-                details: err.results ? err.results.errors : null
-            };
-
-            res.json({error: error});
-        };//end formatValidationError
-
-        // Initialize the Swagger middleware
-        function initMiddleWare(middleware, callback) {
-            debug('initializating middleware');
-
-            app.use((req, res, next)=> {
-                res.setHeader('Access-Control-Allow-Origin', '*');
-                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
-                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
-                res.setHeader('Access-Control-Allow-Credentials', true);
-
-                if (req.method === 'OPTIONS') return res.end();
-
-                next();
-            });
-
-            app.use(middleware.swaggerMetadata());
-            app.use(middleware.swaggerValidator(), formatValidationError);
-
-            app.use(middleware.swaggerRouter(options));
-
-            app.use((err, req, res, next) => {
-                res.status(500);
-                res.send(err);
-                res.end();
-            });
-
-            app.use(middleware.swaggerUi({
-                apiDocs: self.main.config.get('service.pathname') + '/api-docs',
-                swaggerUi: self.main.config.get('service.pathname') + '/docs'
-            }));
-
-            app.use(express.static('public'));
-
-            callback();
-        };//end initMiddleWare
-
-        swaggerTools.initializeMiddleware(self.main.swaggerDoc,  (swaggerMiddleware) =>{
-            initMiddleWare(swaggerMiddleware, (err) =>{
-                resolve();
-            });
-        });
-
-    });
-}
+  } catch (err) {
+    console.info(err);
+    throw new Error('Error into routers');
+  }
+};
 
 module.exports = app;

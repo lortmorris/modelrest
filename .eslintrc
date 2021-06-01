@@ -1,0 +1,40 @@
+{
+  "extends": "airbnb",
+  "parser": "babel-eslint",
+  "rules": {
+    "max-len": [
+      "error",
+      { "code": 200, "comments": 200 }
+    ],
+    "react/prefer-es6-class": ["error", "always"],
+    "react/jsx-filename-extension": [
+      "error",
+      { "extensions": [".js", ".jsx"] }
+    ],
+    "indent": [
+      "error",
+      2
+    ],
+    "operator-linebreak": ["error", "after"],
+    "no-underscore-dangle": ["error", { "allow": ["_id"] }],
+    "import/named": "off",
+    "import/no-cycle": "off",
+    "react/prop-types": "off",
+    "no-console": "off",
+    "import/prefer-default-export": "off",
+    "camelcase": "off",
+    "react/jsx-props-no-spreading": "off",
+  },
+  "env": {
+    "browser": false,
+    "node": true
+  },
+  "globals": {
+    "__DEV__": true,
+    "FormData": true,
+    "fetch": true,
+    "Headers": true,
+    "Request": true,
+    "File": true
+  }
+}
